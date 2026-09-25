@@ -1,0 +1,10 @@
+/target
+# never commit secrets
+.env
+.env.*
+!.env.example
+/config/
+*-keypair.json
+*.pem
+*.key
+.DS_Store
