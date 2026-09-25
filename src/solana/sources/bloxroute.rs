@@ -11,7 +11,7 @@ use crate::solana::dexes::common::{
     set_compute_unit_limit,
 };
 use crate::solana::provider_fee::ProviderFee;
-use crate::{Dex, PreparedSwap, Pubkey, Quote, Trade, TradeError, UsdValue};
+use crate::{Dex, PreparedSwap, Pubkey, Quote, Trade, TradeError, TransactionFormat, UsdValue};
 
 const PROGRAM: Pubkey = Pubkey::from_str_const("BLXJD1miMgFTjCNR9B9KRPnhXMQZQaANvC7EGRVeTphD");
 
@@ -164,6 +164,8 @@ impl InstructionsResponse {
             quote,
             instructions,
             lookup_tables: vec![],
+            // bloXroute routes use ~60 inline accounts and return no lookup tables.
+            format: TransactionFormat::V1,
         })
     }
 }
@@ -176,8 +178,8 @@ impl TransactionConfig {
         {
             return Err(decode_error("unsupported transaction configuration"));
         }
-        // Translate v1 configuration to v0 budgets; the executor preserves the requested CU floor.
-        // v0 still needs caller-supplied ALTs for large routes and enforces the 1232-byte wire limit.
+        // Expressed as budget instructions; the executor moves them into the V1 message header
+        // and keeps the requested CU limit as a floor.
         let mut instructions = vec![
             set_compute_unit_limit(self.compute_unit_limit),
             budget(

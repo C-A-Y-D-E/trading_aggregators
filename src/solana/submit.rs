@@ -130,7 +130,8 @@ struct SubmitResponse {
 #[async_trait]
 impl Submitter for BloxrouteSubmitter {
     async fn submit(&self, tx: &VersionedTransaction) -> Result<Signature> {
-        let bytes = bincode::serialize(tx).map_err(|e| anyhow!("bloxroute: serialize tx: {e}"))?;
+        // wincode is Solana's wire encoding; bincode lays V1 transactions out wrongly.
+        let bytes = wincode::serialize(tx).map_err(|e| anyhow!("bloxroute: serialize tx: {e}"))?;
         let body = SubmitRequest {
             transaction: TxContent {
                 content: &B64.encode(bytes),

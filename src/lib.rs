@@ -19,6 +19,6 @@ pub use solana::{
     FeeCollection, GasSponsor, Jupiter, NativeMarket, PreparedSwap, Pubkey, PumpFun, PumpSwap,
     Quote, QuoteSource, Relay, RpcClient, RpcSubmitter, SdkFee, Settlement, Side, Signature,
     Signer, SolUsdcPrice, SolUsdcPriceSource, SubmitProtection, Submitter, SwapResult, SwapStatus,
-    Tip, Trade, TradingClient, USDC_MINT, Venue, VersionedTransaction, load_address_lookup_table,
-    load_address_lookup_tables, shared_lookup_addresses,
+    Tip, Trade, TradingClient, TransactionFormat, USDC_MINT, Venue, VersionedTransaction,
+    load_address_lookup_table, load_address_lookup_tables, shared_lookup_addresses,
 };

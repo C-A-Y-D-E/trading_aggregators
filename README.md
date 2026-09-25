@@ -357,14 +357,20 @@ Robinhood uses Relay's `amountUsd`. A failed pool read or an unparseable value i
 pricing and its pool reads; `usd_value` is then always `None`.
 
 bloXroute uses `/v1/swap-instructions` with the raw `Authorization` header. The
-public testing endpoint is `https://api-dev.blox.ag` (mainnet assets). Its v1 budget
-configuration is translated to v0 compute-budget instructions, retaining heap,
-loaded-account limits and the requested compute-unit floor. The executor adds
-simulation headroom and the caller's priority fee. bloXroute returns no lookup
-tables, and live routes checked on 2026-09-25 used about 60 unique accounts, far
-over this SDK's 1,232-byte v0 limit: most routes fail at transaction build unless
-you supply ALTs covering their accounts. This does not add v1 transaction signing. The aggregator configuration is independent of
-`BloxrouteSubmitter`; either can be used without the other.
+public testing endpoint is `https://api-dev.blox.ag` (mainnet assets). Its routes
+use about 60 inline accounts and no lookup tables, so the SDK builds them as
+**V1 transactions** (`PreparedSwap.format == TransactionFormat::V1`, live on mainnet
+since 2026-09-15): up to 64 accounts and 4,096 bytes. bloXroute's budget
+configuration (compute-unit floor, loaded-account limit, heap) goes into the V1
+message header instead of ComputeBudget instructions, and the caller's priority fee
+is written there as total lamports. The executor adds simulation headroom. Every
+other source builds V0 transactions with lookup tables. The aggregator configuration
+is independent of `BloxrouteSubmitter`; either can be used without the other.
+
+V1 transactions must be encoded with `wincode` (Solana's wire encoding): `bincode`
+writes V1 signatures in the wrong place. A `Signer` signs `tx.message.serialize()`,
+which is already correct for V1. Signers that send the whole transaction to a signing
+service must encode it with `wincode` and the service must accept V1.
 
 Relay uses [`POST /quote/v2`](https://docs.relay.link/references/api/get-quote-v2)
 with an optional `x-api-key`, exact input and explicit slippage. It accepts only

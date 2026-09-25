@@ -6,19 +6,21 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_commitment_config::CommitmentConfig;
 use solana_instruction::Instruction;
-use solana_message::{AddressLookupTableAccount, Hash, VersionedMessage, v0};
+use solana_message::{AddressLookupTableAccount, Hash, VersionedMessage, v0, v1};
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 
 use crate::error::{Result, TradeError};
 use crate::solana::dexes::common::{
-    COMPUTE_BUDGET_PROGRAM, SET_COMPUTE_UNIT_LIMIT, TOKEN_PROGRAM, ata, decode_account,
+    COMPUTE_BUDGET_PROGRAM, REQUEST_HEAP_FRAME, SET_COMPUTE_UNIT_LIMIT,
+    SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT, TOKEN_PROGRAM, ata, decode_account,
     set_compute_unit_limit, set_compute_unit_price, tip as tip_ix,
 };
 use crate::solana::lookup_table::merge_lookup_tables;
 use crate::solana::types::{
     PreparedSwap, Settlement, Side, Signer, Submitter, SwapResult, SwapStatus, Trade,
+    TransactionFormat,
 };
 use crate::{GasSponsor, USDC_MINT};
 
@@ -27,9 +29,19 @@ const DEFAULT_CU_LIMIT: u32 = 350_000;
 /// 20% above simulated usage, so small state changes before landing don't exhaust compute.
 const CU_HEADROOM: f64 = 1.2;
 const MICRO_LAMPORTS_PER_LAMPORT: u128 = 1_000_000;
-const MAX_TRANSACTION_BYTES: u64 = 1_232;
-/// Final layout is [CU limit, CU price, ...route], so route instruction `i` lands at `i + 2`.
+const MAX_V0_TRANSACTION_BYTES: u64 = 1_232;
+/// V0's default when no limit is requested; V1 would read a missing limit as zero.
+const MAX_LOADED_ACCOUNTS_DATA_SIZE: u32 = 64 * 1024 * 1024;
+/// V0 layout is [CU limit, CU price, ...route], so route instruction `i` lands at `i + 2`.
+/// Sponsorship only builds V0 transactions.
 const PREPENDED_BUDGET_INSTRUCTIONS: usize = 2;
+
+/// One transaction's route instructions and the layout to build them in.
+pub(crate) struct Route<'a> {
+    pub instructions: Vec<Instruction>,
+    pub lookup_tables: &'a [AddressLookupTableAccount],
+    pub format: TransactionFormat,
+}
 
 pub(crate) struct SwapSigners<'a> {
     pub user: &'a dyn Signer,
@@ -102,11 +114,15 @@ pub(crate) async fn submit_swap(
         .checked_sub(1)
         .map(|index| index + PREPENDED_BUDGET_INSTRUCTIONS);
     let mut sponsorship_fee = prepared.quote.sponsorship_fee;
+    let route = Route {
+        instructions: prepared.instructions,
+        lookup_tables: &alts,
+        format: prepared.format,
+    };
     let mut tx = build_transaction(
         rpc,
         &signers.payer(&params.wallet),
-        prepared.instructions,
-        &alts,
+        route,
         priority_fee_lamports,
         submitter,
     )
@@ -141,32 +157,23 @@ pub(crate) async fn submit_swap(
 pub(crate) async fn build_transaction(
     rpc: &Arc<RpcClient>,
     payer: &Pubkey,
-    mut instructions: Vec<Instruction>,
-    lookup_tables: &[AddressLookupTableAccount],
+    mut route: Route<'_>,
     priority_fee_lamports: u64,
     submitter: &dyn Submitter,
 ) -> Result<VersionedTransaction> {
-    let requested_limit = take_compute_unit_limit(&mut instructions)?;
+    let budget = RequestedBudget::take(&mut route.instructions, route.format)?;
     if let Some(t) = submitter.default_tip() {
-        instructions.push(tip_ix(payer, &t.account, t.lamports));
+        route
+            .instructions
+            .push(tip_ix(payer, &t.account, t.lamports));
     }
 
-    let cu_limit = match simulate_units(rpc, payer, &instructions, lookup_tables).await? {
+    let cu_limit = match simulate_units(rpc, payer, &route, &budget).await? {
         Some(units) => ((units as f64 * CU_HEADROOM) as u32).clamp(1, CU_LIMIT_MAX),
         // Only a successful simulation missing its CU estimate uses the default.
         None => DEFAULT_CU_LIMIT,
     }
-    .max(requested_limit.unwrap_or(0));
-
-    // The caller budgets a total priority fee; Solana prices it per compute unit.
-    let price = (u128::from(priority_fee_lamports) * MICRO_LAMPORTS_PER_LAMPORT
-        / u128::from(cu_limit)) as u64;
-
-    let mut all = vec![
-        set_compute_unit_limit(cu_limit),
-        set_compute_unit_price(price),
-    ];
-    all.extend(instructions);
+    .max(budget.compute_unit_limit.unwrap_or(0));
 
     let blockhash = rpc
         .get_latest_blockhash()
@@ -175,20 +182,147 @@ pub(crate) async fn build_transaction(
             context: "get_latest_blockhash",
             source,
         })?;
-    let msg = v0::Message::try_compile(payer, &all, lookup_tables, blockhash)
-        .map_err(|e| TradeError::Build(format!("compile message: {e:?}")))?;
-    let tx = VersionedTransaction {
-        signatures: vec![Signature::default(); usize::from(msg.header.num_required_signatures)],
-        message: VersionedMessage::V0(msg),
+    let message = match route.format {
+        TransactionFormat::V0 => {
+            // The caller budgets a total priority fee; V0 prices it per compute unit.
+            let price = (u128::from(priority_fee_lamports) * MICRO_LAMPORTS_PER_LAMPORT
+                / u128::from(cu_limit)) as u64;
+            let mut all = vec![
+                set_compute_unit_limit(cu_limit),
+                set_compute_unit_price(price),
+            ];
+            all.extend(route.instructions);
+            compile_v0(payer, &all, route.lookup_tables, blockhash)?
+        }
+        TransactionFormat::V1 => {
+            let config = budget.v1_config(cu_limit, priority_fee_lamports);
+            compile_v1(payer, &route.instructions, config, blockhash)?
+        }
     };
-    let serialized_size = bincode::serialized_size(&tx)
-        .map_err(|e| TradeError::Build(format!("measure transaction: {e}")))?;
-    if serialized_size > MAX_TRANSACTION_BYTES {
+    let tx = unsigned(message);
+    check_size(&tx, route.format)?;
+    Ok(tx)
+}
+
+/// Compute budget a route asks for. V0 keeps heap and loaded-account requests as
+/// instructions; V1 moves them into the message header, where they must live.
+#[derive(Default)]
+struct RequestedBudget {
+    compute_unit_limit: Option<u32>,
+    loaded_accounts_data_size_limit: Option<u32>,
+    heap_size: Option<u32>,
+}
+
+impl RequestedBudget {
+    fn take(instructions: &mut Vec<Instruction>, format: TransactionFormat) -> Result<Self> {
+        let mut budget = Self {
+            compute_unit_limit: take_compute_unit_limit(instructions)?,
+            ..Self::default()
+        };
+        if format == TransactionFormat::V0 {
+            return Ok(budget);
+        }
+        for instruction in instructions
+            .iter()
+            .filter(|instruction| instruction.program_id == COMPUTE_BUDGET_PROGRAM)
+        {
+            let (tag, value) = budget_value(instruction)?;
+            let slot = match tag {
+                REQUEST_HEAP_FRAME => &mut budget.heap_size,
+                SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT => &mut budget.loaded_accounts_data_size_limit,
+                _ => return Err(invalid_budget()),
+            };
+            if slot.replace(value).is_some() {
+                return Err(invalid_budget());
+            }
+        }
+        instructions.retain(|instruction| instruction.program_id != COMPUTE_BUDGET_PROGRAM);
+        Ok(budget)
+    }
+
+    /// V1 takes the priority fee as total lamports, the unit callers already budget in.
+    fn v1_config(
+        &self,
+        compute_unit_limit: u32,
+        priority_fee_lamports: u64,
+    ) -> v1::TransactionConfig {
+        v1::TransactionConfig {
+            priority_fee: (priority_fee_lamports > 0).then_some(priority_fee_lamports),
+            compute_unit_limit: Some(compute_unit_limit),
+            loaded_accounts_data_size_limit: Some(
+                self.loaded_accounts_data_size_limit
+                    .unwrap_or(MAX_LOADED_ACCOUNTS_DATA_SIZE),
+            ),
+            heap_size: self.heap_size,
+        }
+    }
+}
+
+fn budget_value(instruction: &Instruction) -> Result<(u8, u32)> {
+    let [tag, value @ ..] = instruction.data.as_slice() else {
+        return Err(invalid_budget());
+    };
+    let value: [u8; 4] = value.try_into().map_err(|_| invalid_budget())?;
+    Ok((*tag, u32::from_le_bytes(value)))
+}
+
+fn invalid_budget() -> TradeError {
+    TradeError::Build("invalid or duplicate compute-budget request for a v1 transaction".into())
+}
+
+fn compile_v0(
+    payer: &Pubkey,
+    instructions: &[Instruction],
+    lookup_tables: &[AddressLookupTableAccount],
+    blockhash: Hash,
+) -> Result<VersionedMessage> {
+    v0::Message::try_compile(payer, instructions, lookup_tables, blockhash)
+        .map(VersionedMessage::V0)
+        .map_err(|error| TradeError::Build(format!("compile message: {error}")))
+}
+
+fn compile_v1(
+    payer: &Pubkey,
+    instructions: &[Instruction],
+    config: v1::TransactionConfig,
+    blockhash: Hash,
+) -> Result<VersionedMessage> {
+    let message = v1::Message::try_compile_with_config(payer, instructions, blockhash, config)
+        .map_err(|error| TradeError::Build(format!("compile v1 message: {error}")))?;
+    // Compiling doesn't enforce V1's 64-account and 64-instruction caps; validation does.
+    message
+        .validate()
+        .map_err(|error| TradeError::Build(format!("invalid v1 message: {error:?}")))?;
+    Ok(VersionedMessage::V1(message))
+}
+
+fn unsigned(message: VersionedMessage) -> VersionedTransaction {
+    VersionedTransaction {
+        signatures: vec![
+            Signature::default();
+            usize::from(message.header().num_required_signatures)
+        ],
+        message,
+    }
+}
+
+/// Measured in wincode, the wire encoding; bincode lays V1 out wrongly.
+fn check_size(tx: &VersionedTransaction, format: TransactionFormat) -> Result<()> {
+    let (maximum, hint) = match format {
+        TransactionFormat::V0 => (
+            MAX_V0_TRANSACTION_BYTES,
+            "; provide an address lookup table",
+        ),
+        TransactionFormat::V1 => (v1::MAX_TRANSACTION_SIZE as u64, ""),
+    };
+    let size = wincode::serialized_size(tx)
+        .map_err(|error| TradeError::Build(format!("measure transaction: {error}")))?;
+    if size > maximum {
         return Err(TradeError::Build(format!(
-            "transaction is {serialized_size} bytes; maximum is {MAX_TRANSACTION_BYTES}; provide an address lookup table"
+            "transaction is {size} bytes; maximum is {maximum}{hint}"
         )));
     }
-    Ok(tx)
+    Ok(())
 }
 
 fn is_compute_unit_limit(instruction: &Instruction) -> bool {
@@ -226,18 +360,22 @@ fn take_compute_unit_limit(instructions: &mut Vec<Instruction>) -> Result<Option
 async fn simulate_units(
     rpc: &Arc<RpcClient>,
     payer: &Pubkey,
-    instructions: &[Instruction],
-    lookup_tables: &[AddressLookupTableAccount],
+    route: &Route<'_>,
+    budget: &RequestedBudget,
 ) -> Result<Option<u64>> {
-    let mut sim_ixs = vec![set_compute_unit_limit(CU_LIMIT_MAX)];
-    sim_ixs.extend_from_slice(instructions);
     // Placeholder: `replace_recent_blockhash` below makes the node substitute a live blockhash.
-    let msg = v0::Message::try_compile(payer, &sim_ixs, lookup_tables, Hash::default())
-        .map_err(|error| TradeError::Build(format!("compile simulation: {error}")))?;
-    let tx = VersionedTransaction {
-        signatures: vec![Signature::default(); usize::from(msg.header.num_required_signatures)],
-        message: VersionedMessage::V0(msg),
+    let message = match route.format {
+        TransactionFormat::V0 => {
+            let mut sim_ixs = vec![set_compute_unit_limit(CU_LIMIT_MAX)];
+            sim_ixs.extend_from_slice(&route.instructions);
+            compile_v0(payer, &sim_ixs, route.lookup_tables, Hash::default())?
+        }
+        TransactionFormat::V1 => {
+            let config = budget.v1_config(CU_LIMIT_MAX, 0);
+            compile_v1(payer, &route.instructions, config, Hash::default())?
+        }
     };
+    let tx = unsigned(message);
     let sim = rpc
         .simulate_transaction_with_config(
             &tx,

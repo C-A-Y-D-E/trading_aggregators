@@ -9,7 +9,7 @@ use solana_pubkey::{Pubkey, pubkey};
 
 use crate::solana::dexes::common::*;
 use crate::solana::types::{
-    Dex, NativeMarket, PreparedSwap, Quote, QuoteSource, Settlement, Side, Trade,
+    Dex, NativeMarket, PreparedSwap, Quote, QuoteSource, Settlement, Side, Trade, TransactionFormat,
 };
 
 pub const PROGRAM_ID: Pubkey = pubkey!("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
@@ -620,6 +620,7 @@ impl Dex for PumpSwap {
             quote,
             instructions,
             lookup_tables: vec![],
+            format: TransactionFormat::V0,
         })
     }
 }

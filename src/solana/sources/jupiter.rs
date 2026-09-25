@@ -6,7 +6,7 @@ use solana_pubkey::Pubkey;
 use super::{route_mints, validated_quote};
 use crate::aggregators::jupiter::{BuildRequest, BuildResponse, JupiterApi, VENUE};
 use crate::error::{Result, TradeError};
-use crate::solana::types::{Dex, PreparedSwap, Quote, Trade};
+use crate::solana::types::{Dex, PreparedSwap, Quote, Trade, TransactionFormat};
 
 const EXACT_INPUT_MODE: &str = "ExactIn";
 
@@ -64,6 +64,7 @@ impl Jupiter {
             quote: build.quote(trade)?,
             instructions: build.instructions(trade.wallet, payer)?,
             lookup_tables: build.lookup_tables()?,
+            format: TransactionFormat::V0,
         })
     }
 }

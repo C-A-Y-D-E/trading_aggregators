@@ -12,7 +12,7 @@ use crate::aggregators::dflow::{
 use crate::error::Result;
 use crate::solana::lookup_table::load_address_lookup_tables;
 use crate::solana::provider_fee::ProviderFee;
-use crate::{Dex, PreparedSwap, Pubkey, Quote, RpcClient, Trade};
+use crate::{Dex, PreparedSwap, Pubkey, Quote, RpcClient, Trade, TransactionFormat};
 
 /// Atomic imperative swaps, including user-executed sponsorship; no intent/async orders.
 pub struct DFlow {
@@ -100,6 +100,7 @@ impl DFlow {
             quote,
             instructions,
             lookup_tables: load_address_lookup_tables(&self.rpc, &addresses).await?,
+            format: TransactionFormat::V0,
         })
     }
 }

@@ -24,7 +24,7 @@ pub use sources::{bloxroute::Bloxroute, dflow::DFlow, jupiter::Jupiter, relay::R
 pub use submit::{BloxrouteSubmitter, RpcSubmitter, SubmitProtection};
 pub use types::{
     Dex, NativeMarket, PreparedSwap, Quote, QuoteSource, Settlement, Side, Signer, Submitter,
-    SwapResult, SwapStatus, Tip, Trade, Venue,
+    SwapResult, SwapStatus, Tip, Trade, TransactionFormat, Venue,
 };
 
 pub use crate::UsdValue;

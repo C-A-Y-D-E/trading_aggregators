@@ -179,12 +179,25 @@ pub struct Quote {
     pub sponsorship_fee: u64,
 }
 
+/// The transaction layout the executor builds for a route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransactionFormat {
+    /// Compute budget as instructions; lookup tables allowed; up to 1,232 bytes.
+    #[default]
+    V0,
+    /// Compute budget in the message header; inline addresses only (no lookup tables);
+    /// up to 64 accounts and 4,096 bytes.
+    V1,
+}
+
 #[derive(Debug)]
 pub struct PreparedSwap {
     pub venue: &'static str,
     pub quote: Quote,
     pub instructions: Vec<Instruction>,
+    /// Ignored for `TransactionFormat::V1`.
     pub lookup_tables: Vec<AddressLookupTableAccount>,
+    pub format: TransactionFormat,
 }
 
 #[derive(Debug, Clone, Copy)]

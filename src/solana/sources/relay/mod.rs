@@ -12,7 +12,10 @@ use crate::aggregators::relay::{
 use crate::error::Result;
 use crate::solana::lookup_table::load_address_lookup_tables;
 use crate::solana::provider_fee::ProviderFee;
-use crate::{Dex, PreparedSwap, Pubkey, Quote, RpcClient, Settlement, Side, Trade, USDC_MINT};
+use crate::{
+    Dex, PreparedSwap, Pubkey, Quote, RpcClient, Settlement, Side, Trade, TransactionFormat,
+    USDC_MINT,
+};
 
 const SOLANA_CHAIN_ID: u64 = 792_703_809;
 const NATIVE_SOL: &str = "11111111111111111111111111111111";
@@ -78,6 +81,7 @@ impl Relay {
             quote,
             instructions,
             lookup_tables: load_address_lookup_tables(&self.rpc, &addresses).await?,
+            format: TransactionFormat::V0,
         })
     }
 }
