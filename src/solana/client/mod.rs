@@ -206,11 +206,13 @@ impl TradingClient {
         priority_fee_lamports: u64,
         lookup_tables: &[AddressLookupTableAccount],
     ) -> Result<SwapResult> {
-        let before = output_balance(&self.rpc, trade).await;
-
+        // Both finish before anything is sent, so `before` never sees the swap's own output.
+        let (before, prepared) =
+            tokio::join!(output_balance(&self.rpc, trade), self.prepare_swap(trade));
         let pending = self
-            .submit_with_lookup_tables(
+            .submit_prepared(
                 trade,
+                prepared?,
                 signer,
                 submitter,
                 priority_fee_lamports,
@@ -261,8 +263,28 @@ impl TradingClient {
         priority_fee_lamports: u64,
         lookup_tables: &[AddressLookupTableAccount],
     ) -> Result<SwapResult> {
-        let combined_tables = merge_lookup_tables(lookup_tables, &self.shared_lookup_tables);
         let prepared = self.prepare_swap(trade).await?;
+        self.submit_prepared(
+            trade,
+            prepared,
+            signer,
+            submitter,
+            priority_fee_lamports,
+            lookup_tables,
+        )
+        .await
+    }
+
+    async fn submit_prepared(
+        &self,
+        trade: &Trade,
+        prepared: PreparedSwap,
+        signer: &dyn Signer,
+        submitter: &dyn Submitter,
+        priority_fee_lamports: u64,
+        lookup_tables: &[AddressLookupTableAccount],
+    ) -> Result<SwapResult> {
+        let combined_tables = merge_lookup_tables(lookup_tables, &self.shared_lookup_tables);
         // No fallback after preparation: a submission error may mean the transaction landed.
         submit_swap(
             &self.rpc,

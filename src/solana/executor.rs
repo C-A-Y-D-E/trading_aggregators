@@ -168,20 +168,20 @@ pub(crate) async fn build_transaction(
             .push(tip_ix(payer, &t.account, t.lamports));
     }
 
-    let cu_limit = match simulate_units(rpc, payer, &route, &budget).await? {
+    let (simulated, blockhash) = tokio::join!(
+        simulate_units(rpc, payer, &route, &budget),
+        rpc.get_latest_blockhash()
+    );
+    let cu_limit = match simulated? {
         Some(units) => ((units as f64 * CU_HEADROOM) as u32).clamp(1, CU_LIMIT_MAX),
         // Only a successful simulation missing its CU estimate uses the default.
         None => DEFAULT_CU_LIMIT,
     }
     .max(budget.compute_unit_limit.unwrap_or(0));
-
-    let blockhash = rpc
-        .get_latest_blockhash()
-        .await
-        .map_err(|source| TradeError::Rpc {
-            context: "get_latest_blockhash",
-            source,
-        })?;
+    let blockhash = blockhash.map_err(|source| TradeError::Rpc {
+        context: "get_latest_blockhash",
+        source,
+    })?;
     let message = match route.format {
         TransactionFormat::V0 => {
             // The caller budgets a total priority fee; V0 prices it per compute unit.
