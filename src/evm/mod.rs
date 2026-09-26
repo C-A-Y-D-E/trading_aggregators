@@ -56,7 +56,7 @@ impl<C: Network> Client<C> {
     pub fn new(rpc_url: &str) -> Result<Self> {
         Ok(Self {
             relay: Relay::new(),
-            uniswap: Uniswap::default(),
+            uniswap: Uniswap,
             node: node::Node::new(rpc_url)?,
             quote_source: None,
             app_fee: None,
@@ -64,12 +64,6 @@ impl<C: Network> Client<C> {
             confirmation_timeout: Duration::from_secs(60),
             network: PhantomData,
         })
-    }
-
-    /// Your deployed `CswapRouter`; Uniswap swaps go through it and it takes the app fee.
-    pub fn with_uniswap_router(mut self, router: Address) -> Self {
-        self.uniswap = self.uniswap.with_router(router);
-        self
     }
 
     pub fn with_quote_source(mut self, source: QuoteSource) -> Self {

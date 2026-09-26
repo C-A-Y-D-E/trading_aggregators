@@ -92,6 +92,8 @@ pub struct EthPool {
 #[derive(Debug, Clone, Copy)]
 pub struct UniswapDeployment {
     pub weth: Address,
+    /// Our fee-taking router, not a Uniswap contract.
+    pub cswap_router: Address,
     pub v2_factory: Address,
     pub v3_factory: Address,
     pub v3_quoter: Address,
@@ -119,17 +121,9 @@ struct PoolQuote {
     eth_per_token: f64,
 }
 
-#[derive(Default)]
-pub(crate) struct Uniswap {
-    router: Option<Address>,
-}
+pub(crate) struct Uniswap;
 
 impl Uniswap {
-    pub fn with_router(mut self, router: Address) -> Self {
-        self.router = Some(router);
-        self
-    }
-
     /// `Some` when `pool` is an official Uniswap pool pairing a token with ETH that the router
     /// can trade (hookless for v4); `None` means use Relay.
     pub async fn eth_pool<C: Network>(
@@ -190,13 +184,10 @@ impl Uniswap {
         fee: Option<AppFee>,
     ) -> Result<PreparedSwap> {
         trade.validate()?;
-        let router = self.router.ok_or_else(|| {
-            TradeError::Build("Uniswap needs your CswapRouter: call with_uniswap_router".into())
-        })?;
         let route = self.route::<C>(node, trade).await?;
         let quote = quote_trade::<C>(node, trade, route, fee).await?;
         let swap = router::Swap {
-            router,
+            router: C::UNISWAP.cswap_router,
             wallet: trade.wallet,
             route,
             amount_in: trade.amount,

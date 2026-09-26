@@ -131,13 +131,13 @@ gas sponsor is neither required nor configured for Robinhood.
 
 Uniswap trades **ETH pairs only, one pool per trade**: buys go ETH → token and sells
 go token → ETH. Anything else (USDG pairs, multi-hop) goes to Relay. Swaps run
-through your own `CswapRouter`, which takes the app fee.
+through our `CswapRouter` (`0xd8fbb0ded86fb6d593b598a44daa082deb329ade`), built into
+the SDK, which takes the app fee.
 
 ```rust,ignore
 use trading_aggregator::robinhood::{self, Currency, QuoteSource, Trade};
 
 let client = robinhood::Client::new(robinhood_rpc_url)?
-    .with_uniswap_router(cswap_router)      // required for Uniswap
     // Router fee rate, in ETH. Must be at least the router's minFeeBps (0.5% at deploy);
     // the router pays its own stored fee wallet, so AppFee's wallet is not used here.
     .with_app_fee(robinhood::AppFee::new(fee_wallet, 100)?);

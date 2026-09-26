@@ -26,6 +26,8 @@ impl crate::evm::Network for Robinhood {
     // Uniswap's official Robinhood Chain deployments.
     const UNISWAP: UniswapDeployment = UniswapDeployment {
         weth: address!("0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"),
+        // Our CswapRouter; it takes the app fee on every Uniswap swap.
+        cswap_router: address!("0xd8fbb0ded86fb6d593b598a44daa082deb329ade"),
         v2_factory: address!("0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f"),
         v3_factory: address!("0x1f7d7550b1b028f7571e69a784071f0205fd2efa"),
         v3_quoter: address!("0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7"),
