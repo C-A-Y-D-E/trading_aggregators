@@ -45,6 +45,7 @@ pub(super) fn connect(
         }))
 }
 
+#[derive(Clone)]
 pub(super) struct Node {
     provider: RootProvider,
 }
@@ -77,6 +78,37 @@ impl Node {
             .pending()
             .await
             .map_err(rpc_error(VENUE, "eth_getTransactionCount"))
+    }
+
+    /// Read-only contract call against the latest block.
+    pub async fn call(&self, to: Address, data: Vec<u8>) -> Result<Bytes> {
+        let request = TransactionRequest::default()
+            .with_to(to)
+            .with_input(Bytes::from(data));
+        self.provider
+            .call(request)
+            .await
+            .map_err(rpc_error(VENUE, "eth_call"))
+    }
+
+    /// Like `call`, but `None` when the call reverts (e.g. the address is not the expected
+    /// contract). Other RPC failures stay errors.
+    pub async fn try_call(&self, to: Address, data: Vec<u8>) -> Result<Option<Bytes>> {
+        let request = TransactionRequest::default()
+            .with_to(to)
+            .with_input(Bytes::from(data));
+        match self.provider.call(request).await {
+            Ok(output) => Ok(Some(output)),
+            // alloy's own revert test: an error response whose message mentions a revert.
+            Err(error)
+                if error
+                    .as_error_resp()
+                    .is_some_and(|payload| payload.message.contains("revert")) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(rpc_error(VENUE, "eth_call")(error)),
+        }
     }
 
     pub async fn estimate_gas(&self, transaction: &Transaction) -> Result<u64> {

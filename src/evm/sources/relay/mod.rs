@@ -99,7 +99,7 @@ fn quote<C: Network>(
     if input != trade.amount
         || minimum.is_zero()
         || minimum > output
-        || minimum < portion(output, 10_000 - trade.slippage_bps)
+        || minimum < trade.min_out(output)
     {
         return Err(decode_error("invalid quote amounts or slippage"));
     }
@@ -140,9 +140,7 @@ fn app_fee<C: Network>(
         return Err(decode_error("app fee is on a different chain"));
     }
     // Relay may collect another currency via a conversion; preserve its units instead of treating them as input units.
-    if app.currency.address == trade.input.address()
-        && amount != portion(trade.amount, requested.basis_points())
-    {
+    if app.currency.address == trade.input.address() && amount != requested.of(trade.amount) {
         return Err(decode_error("app fee differs from the requested rate"));
     }
     let currency = if app.currency.address.is_zero() {
@@ -158,10 +156,4 @@ fn decimal(value: &str) -> Result<Amount> {
         return Err(decode_error("expected a decimal integer amount"));
     }
     Amount::from_str_radix(value, 10).map_err(decode_error)
-}
-
-fn portion(amount: Amount, bps: u16) -> Amount {
-    let denominator = Amount::from(10_000);
-    let numerator = Amount::from(bps);
-    (amount / denominator) * numerator + (amount % denominator) * numerator / denominator
 }

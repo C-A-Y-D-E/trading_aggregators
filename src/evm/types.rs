@@ -4,8 +4,18 @@ use alloy_primitives::Bytes;
 use async_trait::async_trait;
 use serde::Serialize;
 
-use super::{Address, Amount, TransactionHash, UnsignedTransaction};
+use super::{Address, Amount, TransactionHash, UniswapPool, UnsignedTransaction};
 use crate::{Result, TradeError, UsdValue};
+
+const BASIS_POINTS: u16 = 10_000;
+
+/// Exactly one quote/execution source. Failures never switch to another source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteSource {
+    Relay,
+    /// ETH pairs only, one pool, through your `CswapRouter`.
+    Uniswap,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Currency {
@@ -29,6 +39,10 @@ pub struct Trade {
     pub output: Currency,
     pub amount: Amount,
     pub slippage_bps: u16,
+    /// Overrides the client's source for this trade.
+    pub quote_source: Option<QuoteSource>,
+    /// Uniswap only: trade exactly this pool instead of the deepest ETH pool.
+    pub pool: Option<UniswapPool>,
 }
 
 impl Trade {
@@ -45,13 +59,30 @@ impl Trade {
             output,
             amount,
             slippage_bps,
+            quote_source: None,
+            pool: None,
         }
+    }
+
+    pub fn with_quote_source(mut self, source: QuoteSource) -> Self {
+        self.quote_source = Some(source);
+        self
+    }
+
+    pub fn with_pool(mut self, pool: UniswapPool) -> Self {
+        self.pool = Some(pool);
+        self
+    }
+
+    /// The least output slippage allows.
+    pub(super) fn min_out(&self, expected: Amount) -> Amount {
+        portion(expected, BASIS_POINTS - self.slippage_bps)
     }
 
     pub(super) fn validate(&self) -> Result<()> {
         if self.wallet.is_zero()
             || self.amount.is_zero()
-            || self.slippage_bps >= 10_000
+            || self.slippage_bps >= BASIS_POINTS
             || self.input.address() == self.output.address()
             || matches!(self.input, Currency::Token(address) if address.is_zero())
             || matches!(self.output, Currency::Token(address) if address.is_zero())
@@ -87,6 +118,18 @@ impl AppFee {
     pub fn basis_points(&self) -> u16 {
         self.basis_points
     }
+
+    /// The fee on `amount`, rounded down.
+    pub(super) fn of(&self, amount: Amount) -> Amount {
+        portion(amount, self.basis_points)
+    }
+}
+
+/// `amount × bps / 10_000`, rounded down without overflowing on large amounts.
+pub(super) fn portion(amount: Amount, bps: u16) -> Amount {
+    let denominator = Amount::from(BASIS_POINTS);
+    let numerator = Amount::from(bps);
+    (amount / denominator) * numerator + (amount % denominator) * numerator / denominator
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

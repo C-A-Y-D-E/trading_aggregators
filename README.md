@@ -3,7 +3,8 @@
 Private Rust SDK, crate name `trading_aggregator`, with named **Solana** and
 **Robinhood** clients in one codebase. Solana supports Pump.fun, PumpSwap, Jupiter,
 DFlow, bloXroute and Relay, SOL/USDC settlement, application fees, and optional
-sponsorship. Robinhood mainnet uses Relay and the trading wallet pays gas.
+sponsorship. Robinhood mainnet uses Relay or Uniswap (v2/v3/v4, ETH pairs, through
+your fee-taking router), and the trading wallet pays gas.
 
 ## Named chain clients
 
@@ -126,14 +127,101 @@ quoted charge's currency and amount because Relay can convert the fee from anoth
 asset. Quotes already contain net output; no second SDK fee is appended. A separate
 gas sponsor is neither required nor configured for Robinhood.
 
+### Robinhood: Uniswap
+
+Uniswap trades **ETH pairs only, one pool per trade**: buys go ETH → token and sells
+go token → ETH. Anything else (USDG pairs, multi-hop) goes to Relay. Swaps run
+through your own `CswapRouter`, which takes the app fee.
+
+```rust,ignore
+use trading_aggregator::robinhood::{self, Currency, QuoteSource, Trade};
+
+let client = robinhood::Client::new(robinhood_rpc_url)?
+    .with_uniswap_router(cswap_router)      // required for Uniswap
+    // Router fee rate, in ETH. Must be at least the router's minFeeBps (0.5% at deploy);
+    // the router pays its own stored fee wallet, so AppFee's wallet is not used here.
+    .with_app_fee(robinhood::AppFee::new(fee_wallet, 100)?);
+
+// Deepest usable ETH pool across v2, v3 fee tiers and hookless v4; None → use Relay.
+let Some(market) = client.find_native_market(token).await? else { /* Relay */ };
+let trade = Trade::exact_input(wallet, Currency::Native, Currency::Token(token), wei, 100)
+    .with_quote_source(QuoteSource::Uniswap)
+    .with_pool(market.pool); // exactly this pool
+let result = client.swap(&trade, &signer, &submitter).await?;
+```
+
+Source precedence is trade `quote_source`, client `with_quote_source`, then **Relay**.
+When a Uniswap trade names no pool, `prepare_swap` uses `find_native_market`'s pool.
+Discovery checks the v2 pair, the four v3 fee tiers, and the four standard hookless
+v4 tiers against both native ETH and WETH, then ranks pools by what a 0.1 ETH buy
+returns. That picks the deepest usable pool and drops pools stuck at a price bound.
+Hooked v4 pools are never used.
+
+When the user supplies a pool, `eth_pool` checks it on-chain before you pick a source:
+
+```rust,ignore
+use trading_aggregator::robinhood::PoolRef;
+
+// A v2 pair / v3 pool address, or a 0x-prefixed 32-byte v4 pool id.
+let pool: PoolRef = user_input.parse()?;
+let trade = match client.eth_pool(pool).await? {
+    Some(eth_pool) => Trade::exact_input(wallet, Currency::Native, Currency::Token(eth_pool.token), wei, 100)
+        .with_quote_source(QuoteSource::Uniswap)
+        .with_pool(eth_pool.pool),
+    None => /* not a routable Uniswap ETH pool: use Relay */,
+};
+```
+
+`Some` means the address is the official factory's v2 pair or v3 pool for a token and
+WETH, or the id is a hookless, initialized v4 pool with native ETH or WETH on one side.
+Everything else returns `None`: other DEXes' pools, non-ETH pairs, hooked v4 pools, EOAs
+and tokens. v4 ids resolve through the PositionManager, so this also covers non-standard
+fee tiers that discovery skips, but a v4 pool that never had a position minted through
+the PositionManager returns `None`.
+
+Quotes come from reserves (v2) or Uniswap's QuoterV2/V4Quoter (`eth_call`). The fee
+is taken from the ETH input on buys and from the ETH output on sells, rounded down,
+and reported as `Quote.application_fee`. `usd_value` prices ETH from the WETH/USDG
+v3 pool and the token from its pool's spot price. A buy is one router transaction
+carrying ETH. A sell adds an exact-amount `approve` to the router first when the
+allowance is short. Execution, gas and confirmation are the same as for Relay.
+
+The router (`CswapRouter`) implements this interface; the SDK encodes these calls:
+
+```solidity
+struct PoolKey { address currency0; address currency1; uint24 fee; int24 tickSpacing; address hooks; }
+
+interface ICswapRouter {
+    enum Version { V2, V3, V4 }
+    struct Pool { Version version; address pool; PoolKey v4Key; } // pool = v2 pair / v3 pool
+
+    /// Takes `feeBps` of msg.value, swaps the rest, sends `token` to msg.sender.
+    function buy(Pool calldata pool, address token, uint256 minOut, uint16 feeBps, uint256 deadline)
+        external payable returns (uint256 tokensOut);
+
+    /// Pulls `amountIn` (approved), swaps to ETH, takes `feeBps` of it, sends the rest.
+    function sell(Pool calldata pool, address token, uint256 amountIn, uint256 minOut, uint16 feeBps, uint256 deadline)
+        external returns (uint256 ethOut);
+}
+```
+
+Fees always go to the router's stored `feeRecipient`, so a direct caller can't pay the
+fee to itself. `feeBps` must be between the router's `minFeeBps` (0.5% at deploy) and
+its fixed 5% cap, or the swap reverts; the reverting gas estimate stops it before
+anything is sent. The owner changes the wallet and the minimum with `setFeeRecipient`
+and `setMinFee`. `minOut` is checked against what the user receives, net of the fee.
+The router verifies each pool against Uniswap's factories (v2 `getPair`, v3 `getPool`)
+and requires `hooks == 0` for v4, since pool addresses come from the caller.
+
 ### Adding another chain
 
-`evm::Client<C>` owns the shared Relay quote parser and transaction execution.
-A new supported chain needs a named module implementing the sealed `Network`
-definition (chain ID, name, verified Relay router and approval proxy), a `Client`
-alias, and facade accessors. Provider code stays in `evm/relay`;
-adding a provider later need not change the named
-chain API. Ethereum and BNB are not enabled yet.
+`evm::Client<C>` owns the shared Relay quote parser, the Uniswap adapter and
+transaction execution. A new supported chain needs a named module implementing the
+sealed `Network` definition (chain ID, name, verified Relay router and approval
+proxy, and its `UniswapDeployment` addresses), a `Client` alias, and facade
+accessors. Provider code stays in `aggregators/relay.rs` and `evm/sources`, and DEX
+code in `evm/dexes`; adding a provider later need not change the named chain API.
+Ethereum and BNB are not enabled yet.
 
 ## Layout
 
@@ -174,14 +262,16 @@ src/
     lookup_table.rs        Shared ALT loading
 
   evm/
-    mod.rs                 Generic EVM client for named chains
-    robinhood.rs           Robinhood mainnet configuration and public API
+    mod.rs                 Generic EVM client for named chains; source selection
+    robinhood.rs           Robinhood mainnet configuration (Relay, Uniswap) and public API
     execution.rs           Fill, sign, verify, submit and confirm each transaction
     unsigned.rs            EIP-1559 signing payload and signed-bytes verification
-    node.rs                EVM node calls via alloy-provider: nonce, gas, fees, receipts
+    node.rs                EVM node calls via alloy-provider: nonce, gas, fees, receipts, eth_call
     submit.rs              RPC and bloXroute EVM submitters
-    types.rs               Trade, Quote, Signer, Submitter
+    types.rs               Trade, Quote, QuoteSource, Signer, Submitter
     sources/relay/         Relay quote checks (mod.rs) and transaction validation (transactions.rs)
+    dexes/uniswap/         Discovery and quotes per version (v2.rs, v3.rs, v4.rs), CswapRouter
+                           transactions (router.rs), contract interfaces (abi.rs)
 examples/
   create_shared_alt.rs    ALT creation utility (running it spends SOL)
 ```

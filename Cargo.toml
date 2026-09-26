@@ -48,6 +48,8 @@ tokio = "1.52.3"
 # After `cargo update`, re-pin each: cargo update -p alloy-sol-macro --precise 1.5.7
 # (then the same for alloy-sol-macro-expander and alloy-sol-macro-input).
 alloy-provider = { version = "2.0.4", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
+# Typed Uniswap and CswapRouter calldata (sol! interfaces); pinned with alloy-primitives.
+alloy-sol-types = "=1.5.7"
 
 [dev-dependencies]
 # Used by the create_shared_alt example.

@@ -7218,6 +7218,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-provider",
+ "alloy-sol-types",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
