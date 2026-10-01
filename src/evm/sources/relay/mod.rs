@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use crate::Result;
 use crate::aggregators::relay::{
-    AppFeeRequest, Fees, QuoteRequest, QuoteResponse, RelayApi, Swap, VENUE, decode_error,
+    AppFeeRequest, Currency as RelayCurrency, Fees, QuoteRequest, QuoteResponse, RelayApi, Swap,
+    VENUE, decode_error,
 };
 use crate::evm::{
     Address, Amount, AppFee, Currency, FeeAmount, Network, PreparedSwap, Quote, Trade,
@@ -96,10 +97,11 @@ fn quote<C: Network>(
     let input = decimal(&details.currency_in.amount)?;
     let output = decimal(&details.currency_out.amount)?;
     let minimum = decimal(&details.currency_out.minimum_amount)?;
+    let fees_from_output = fees_from_output(&response.fees, &details.currency_out.currency)?;
     if input != trade.amount
         || minimum.is_zero()
         || minimum > output
-        || minimum < trade.min_out(output)
+        || minimum < slippage_floor(trade, output, fees_from_output)
     {
         return Err(decode_error("invalid quote amounts or slippage"));
     }
@@ -114,6 +116,23 @@ fn quote<C: Network>(
         application_fee: app_fee::<C>(&response.fees, trade, fee)?,
         usd_value: details.usd_value(),
     })
+}
+
+/// Relay applies slippage to the output before taking its own and the app fee from it.
+fn slippage_floor(trade: &Trade, output: Amount, fees_from_output: Amount) -> Amount {
+    trade
+        .min_out(output + fees_from_output)
+        .saturating_sub(fees_from_output)
+}
+
+fn fees_from_output(fees: &Fees<Address>, output: &RelayCurrency<Address>) -> Result<Amount> {
+    [&fees.relayer, &fees.app]
+        .into_iter()
+        .flatten()
+        .filter(|fee| {
+            fee.currency.chain_id == output.chain_id && fee.currency.address == output.address
+        })
+        .try_fold(Amount::ZERO, |sum, fee| Ok(sum + decimal(&fee.amount)?))
 }
 
 fn app_fee<C: Network>(

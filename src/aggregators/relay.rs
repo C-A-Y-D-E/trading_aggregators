@@ -176,12 +176,16 @@ pub(crate) struct StepItem<S> {
 
 #[derive(Deserialize)]
 pub(crate) struct Fees<A> {
+    pub relayer: Option<CurrencyAmount<A>>,
     pub app: Option<CurrencyAmount<A>>,
 }
 
 impl<A> Default for Fees<A> {
     fn default() -> Self {
-        Self { app: None }
+        Self {
+            relayer: None,
+            app: None,
+        }
     }
 }
 
