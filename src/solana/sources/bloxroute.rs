@@ -1,15 +1,11 @@
 use async_trait::async_trait;
-use solana_instruction::Instruction;
 
 use super::{move_rent_to_sponsor, route_mints, validated_quote};
 use crate::aggregators::bloxroute::{
-    BloxrouteApi, InstructionsRequest, InstructionsResponse, TransactionConfig, VENUE,
+    BloxrouteApi, InstructionsRequest, InstructionsResponse, VENUE,
 };
 use crate::error::Result;
-use crate::solana::dexes::common::{
-    COMPUTE_BUDGET_PROGRAM, REQUEST_HEAP_FRAME, SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
-    set_compute_unit_limit,
-};
+use crate::solana::dexes::common::COMPUTE_BUDGET_PROGRAM;
 use crate::solana::provider_fee::ProviderFee;
 use crate::{Dex, PreparedSwap, Pubkey, Quote, Trade, TradeError, TransactionFormat, UsdValue};
 
@@ -143,7 +139,7 @@ impl InstructionsResponse {
             }
             _ => {}
         }
-        let mut instructions = self.transaction_config.instructions()?;
+        let mut instructions = self.transaction_config.instructions(VENUE)?;
         if let Some(fee) = fee {
             instructions.push(fee.setup(payer.unwrap_or(&trade.wallet)));
         }
@@ -183,33 +179,6 @@ impl InstructionsResponse {
     }
 }
 
-impl TransactionConfig {
-    fn instructions(&self) -> Result<Vec<Instruction>> {
-        if !(1..=1_400_000).contains(&self.compute_unit_limit)
-            || !(1..=67_108_864).contains(&self.loaded_accounts_data_size_limit)
-            || self.priority_fee.is_some_and(|fee| fee != 0)
-        {
-            return Err(decode_error("unsupported transaction configuration"));
-        }
-        // Expressed as budget instructions; the executor moves them into the V1 message header
-        // and keeps the requested CU limit as a floor.
-        let mut instructions = vec![
-            set_compute_unit_limit(self.compute_unit_limit),
-            budget(
-                SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
-                self.loaded_accounts_data_size_limit,
-            ),
-        ];
-        if let Some(heap) = self.heap_size {
-            if !(32_768..=262_144).contains(&heap) || !heap.is_multiple_of(1024) {
-                return Err(decode_error("invalid heap size"));
-            }
-            instructions.push(budget(REQUEST_HEAP_FRAME, heap));
-        }
-        Ok(instructions)
-    }
-}
-
 fn max_accounts(payer: Option<&Pubkey>) -> u8 {
     let sponsor_extra = if payer.is_some() {
         SPONSOR_EXTRA_ACCOUNTS
@@ -217,16 +186,6 @@ fn max_accounts(payer: Option<&Pubkey>) -> u8 {
         0
     };
     MAX_V1_ACCOUNTS - SDK_EXTRA_ACCOUNTS - sponsor_extra
-}
-
-fn budget(kind: u8, value: u32) -> Instruction {
-    let mut data = vec![kind];
-    data.extend_from_slice(&value.to_le_bytes());
-    Instruction {
-        program_id: COMPUTE_BUDGET_PROGRAM,
-        accounts: vec![],
-        data,
-    }
 }
 
 fn decode_error(error: impl std::fmt::Display) -> TradeError {

@@ -1,37 +1,39 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use solana_instruction::Instruction;
 
 use super::{move_rent_to_sponsor, retain_compute_budget, validated_quote};
-use crate::aggregators::ApiInstruction;
 use crate::aggregators::relay::{
     Details, QuoteRequest, QuoteResponse, RelayApi, Swap, VENUE, decode_error,
 };
+use crate::aggregators::{ApiInstruction, TransactionConfig};
 use crate::error::Result;
-use crate::solana::lookup_table::load_address_lookup_tables;
 use crate::solana::provider_fee::ProviderFee;
 use crate::{
-    Dex, PreparedSwap, Pubkey, Quote, RpcClient, Settlement, Side, Trade, TransactionFormat,
-    USDC_MINT,
+    Dex, PreparedSwap, Pubkey, Quote, Settlement, Side, Trade, TransactionFormat, USDC_MINT,
 };
 
 const SOLANA_CHAIN_ID: u64 = 792_703_809;
 const NATIVE_SOL: &str = "11111111111111111111111111111111";
+const V1_VERSION: u8 = 1;
 
 mod app_fee;
 
-/// One atomic, same-chain Solana swap. Solver deposits and multi-transaction flows are rejected.
+/// One atomic, same-chain Solana swap, always as a V1 transaction: up to 4,096 bytes and
+/// 64 accounts, with no lookup tables. Solver deposits and multi-transaction flows are rejected.
 pub struct Relay {
     api: RelayApi,
-    rpc: Arc<RpcClient>,
+}
+
+impl Default for Relay {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Relay {
-    pub fn new(rpc: Arc<RpcClient>) -> Self {
+    pub fn new() -> Self {
         Self {
-            rpc,
             api: RelayApi::new(),
         }
     }
@@ -62,6 +64,7 @@ impl Relay {
         let options = SolanaOptions {
             include_compute_unit_limit: false,
             deposit_fee_payer: payer.map(ToString::to_string),
+            use_v1_transaction: true,
         };
         let response: QuoteResponse<String, TransactionData> = self
             .api
@@ -70,18 +73,12 @@ impl Relay {
         let mut quote = quote(&response.details, &swap, trade)?;
         app_fee::apply(&response.fees, trade, fee, &mut quote)?;
         let data = swap_data(&response)?;
-        let instructions = data.instructions(trade, payer)?;
-        let addresses = data
-            .address_lookup_table_addresses
-            .iter()
-            .map(|address| address.parse().map_err(decode_error))
-            .collect::<Result<Vec<_>>>()?;
         Ok(PreparedSwap {
             venue: VENUE,
             quote,
-            instructions,
-            lookup_tables: load_address_lookup_tables(&self.rpc, &addresses).await?,
-            format: TransactionFormat::V0,
+            instructions: data.instructions(trade, payer)?,
+            lookup_tables: vec![],
+            format: TransactionFormat::V1,
         })
     }
 }
@@ -115,6 +112,7 @@ struct SolanaOptions {
     include_compute_unit_limit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     deposit_fee_payer: Option<String>,
+    use_v1_transaction: bool,
 }
 
 fn swap(trade: &Trade) -> Swap<String> {
@@ -184,14 +182,20 @@ fn swap_data(response: &QuoteResponse<String, TransactionData>) -> Result<&Trans
 struct TransactionData {
     chain_id: Option<u64>,
     instructions: Vec<ApiInstruction>,
+    transaction_version: Option<u8>,
     #[serde(default)]
-    address_lookup_table_addresses: Vec<String>,
+    transaction_config: TransactionConfig,
 }
 
 impl TransactionData {
     fn instructions(&self, trade: &Trade, payer: Option<&Pubkey>) -> Result<Vec<Instruction>> {
         if self.chain_id.is_some_and(|id| id != SOLANA_CHAIN_ID) {
             return Err(decode_error("transaction is not on Solana"));
+        }
+        if self.transaction_version != Some(V1_VERSION) {
+            return Err(decode_error(
+                "transaction version does not match the request",
+            ));
         }
         let mut instructions = Vec::new();
         for api_instruction in &self.instructions {
@@ -213,6 +217,7 @@ impl TransactionData {
                 "missing swap instructions or trading wallet signer",
             ));
         }
+        instructions.extend(self.transaction_config.instructions(VENUE)?);
         Ok(instructions)
     }
 }

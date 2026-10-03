@@ -50,7 +50,7 @@ impl TradingClient {
             jupiter: Jupiter::new(),
             dflow: DFlow::new(rpc.clone()),
             bloxroute: Bloxroute::new(),
-            relay: Relay::new(rpc.clone()),
+            relay: Relay::new(),
             quote_source: None,
             sdk_fee: None,
             gas_sponsor: None,

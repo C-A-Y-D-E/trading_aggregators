@@ -18,6 +18,16 @@ pub(crate) struct ApiInstruction {
     pub data: String,
 }
 
+/// Budget settings a provider wants in a V1 transaction's header.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TransactionConfig {
+    pub compute_unit_limit: Option<u32>,
+    pub loaded_accounts_data_size_limit: Option<u32>,
+    pub heap_size: Option<u32>,
+    pub priority_fee: Option<u64>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiAccount {

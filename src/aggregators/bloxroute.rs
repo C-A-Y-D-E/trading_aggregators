@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::ApiInstruction;
+use super::{ApiInstruction, TransactionConfig};
 use crate::Result;
 use crate::http::ApiClient;
 
@@ -86,13 +86,4 @@ pub(crate) struct PlatformFee {
     pub bps: u16,
     pub mint: Option<String>,
     pub mode: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct TransactionConfig {
-    pub compute_unit_limit: u32,
-    pub loaded_accounts_data_size_limit: u32,
-    pub heap_size: Option<u32>,
-    pub priority_fee: Option<u64>,
 }

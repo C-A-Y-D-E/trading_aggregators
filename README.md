@@ -350,7 +350,7 @@ let robinhood = robinhood.with_relay_url(custom_relay_url);
 ```
 
 Direct adapters also use defaults: `Jupiter::new()`, `Bloxroute::new()`,
-`DFlow::new(rpc)` and `Relay::new(rpc)`. Each supports `with_base_url(url)` and
+`DFlow::new(rpc)` and `Relay::new()`. Each supports `with_base_url(url)` and
 `with_api_key(key)` (bloXroute uses `with_auth_header(value)`).
 
 ## Native market or aggregator?
@@ -455,8 +455,11 @@ at most 61 accounts (`maxAccounts`), leaving room for a submitter tip and an SDK
 transfer added after the route. bloXroute's budget
 configuration (compute-unit floor, loaded-account limit, heap) goes into the V1
 message header instead of ComputeBudget instructions, and the caller's priority fee
-is written there as total lamports. The executor adds simulation headroom. Every
-other source builds V0 transactions with lookup tables. The aggregator configuration
+is written there as total lamports. The executor adds simulation headroom. Relay
+routes are always requested with `useV1Transaction` and built as V1 the same way;
+Relay has no account budget, so a Relay route plus SDK tip, fee and sponsor accounts
+over 64 fails before submission. Jupiter, DFlow and the native venues build V0
+transactions with lookup tables. The aggregator configuration
 is independent of `BloxrouteSubmitter`; either can be used without the other.
 
 V1 transactions must be encoded with `wincode` (Solana's wire encoding): `bincode`

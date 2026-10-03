@@ -3,12 +3,12 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use solana_instruction::{AccountMeta, Instruction};
 
-use crate::aggregators::ApiInstruction;
+use crate::aggregators::{ApiInstruction, TransactionConfig};
 use crate::error::Result;
 use crate::solana::dexes::common::{
     ATA_CREATE, ATA_CREATE_IDEMPOTENT, ATA_PROGRAM, COMPUTE_BUDGET_PROGRAM, REQUEST_HEAP_FRAME,
     SET_COMPUTE_UNIT_LIMIT, SET_COMPUTE_UNIT_PRICE, SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
-    SYSTEM_PROGRAM, ata, ata_account, system_transfer,
+    SYSTEM_PROGRAM, ata, ata_account, set_compute_unit_limit, system_transfer,
 };
 use crate::solana::types::BASIS_POINTS;
 use crate::{Pubkey, Quote, Side, Trade, TradeError};
@@ -126,6 +126,50 @@ impl ApiInstruction {
             accounts,
             data,
         })
+    }
+}
+
+impl TransactionConfig {
+    /// Expressed as budget instructions; the executor moves them into the V1 message header
+    /// and keeps the requested CU limit as a floor.
+    pub(crate) fn instructions(&self, venue: &'static str) -> Result<Vec<Instruction>> {
+        let unsupported = |message: &str| TradeError::Decode(venue, message.into());
+        if self
+            .compute_unit_limit
+            .is_some_and(|limit| !(1..=1_400_000).contains(&limit))
+            || self
+                .loaded_accounts_data_size_limit
+                .is_some_and(|size| !(1..=67_108_864).contains(&size))
+            || self.priority_fee.is_some_and(|fee| fee != 0)
+        {
+            return Err(unsupported("unsupported transaction configuration"));
+        }
+        let mut instructions: Vec<Instruction> = self
+            .compute_unit_limit
+            .map(set_compute_unit_limit)
+            .into_iter()
+            .collect();
+        instructions.extend(
+            self.loaded_accounts_data_size_limit
+                .map(|size| budget(SET_LOADED_ACCOUNTS_DATA_SIZE_LIMIT, size)),
+        );
+        if let Some(heap) = self.heap_size {
+            if !(32_768..=262_144).contains(&heap) || !heap.is_multiple_of(1024) {
+                return Err(unsupported("invalid heap size"));
+            }
+            instructions.push(budget(REQUEST_HEAP_FRAME, heap));
+        }
+        Ok(instructions)
+    }
+}
+
+fn budget(kind: u8, value: u32) -> Instruction {
+    let mut data = vec![kind];
+    data.extend_from_slice(&value.to_le_bytes());
+    Instruction {
+        program_id: COMPUTE_BUDGET_PROGRAM,
+        accounts: vec![],
+        data,
     }
 }
 
