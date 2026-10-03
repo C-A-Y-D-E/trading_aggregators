@@ -59,6 +59,9 @@ pub(crate) struct InstructionsRequest {
     pub platform_fee_mode: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform_fee_account: Option<String>,
+    pub max_accounts: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<String>,
 }
 
 #[derive(Deserialize)]

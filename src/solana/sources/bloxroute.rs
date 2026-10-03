@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use solana_instruction::Instruction;
 
-use super::{route_mints, validated_quote};
+use super::{move_rent_to_sponsor, route_mints, validated_quote};
 use crate::aggregators::bloxroute::{
     BloxrouteApi, InstructionsRequest, InstructionsResponse, TransactionConfig, VENUE,
 };
@@ -14,6 +14,13 @@ use crate::solana::provider_fee::ProviderFee;
 use crate::{Dex, PreparedSwap, Pubkey, Quote, Trade, TradeError, TransactionFormat, UsdValue};
 
 const PROGRAM: Pubkey = Pubkey::from_str_const("BLXJD1miMgFTjCNR9B9KRPnhXMQZQaANvC7EGRVeTphD");
+const MAX_V1_ACCOUNTS: u8 = 64;
+/// The SDK may add a submitter tip account, a fee recipient and its USDC account after the
+/// route. The programs those use already appear in bloXroute routes.
+const SDK_EXTRA_ACCOUNTS: u8 = 3;
+/// Sponsorship adds the reimbursement recipient and its USDC account; bloXroute already
+/// counts the sponsor itself as `feePayer`.
+const SPONSOR_EXTRA_ACCOUNTS: u8 = 2;
 
 /// bloXroute's aggregator API; separate from `BloxrouteSubmitter`.
 pub struct Bloxroute {
@@ -46,6 +53,7 @@ impl Bloxroute {
     pub(crate) async fn prepare_with_fee(
         &self,
         trade: &Trade,
+        payer: Option<&Pubkey>,
         fee: Option<ProviderFee>,
     ) -> Result<PreparedSwap> {
         trade.validate()?;
@@ -63,9 +71,11 @@ impl Bloxroute {
                 platform_fee_bps: fee.map(|fee| fee.fee.basis_points()),
                 platform_fee_mode: fee.map(|fee| fee.mode()),
                 platform_fee_account: fee.map(|fee| fee.account().to_string()),
+                max_accounts: max_accounts(payer),
+                fee_payer: payer.map(ToString::to_string),
             })
             .await?;
-        response.prepare_with_fee(trade, fee)
+        response.prepare_with_fee(trade, payer, fee)
     }
 }
 
@@ -76,29 +86,29 @@ impl Dex for Bloxroute {
     }
 
     async fn quote(&self, trade: &Trade) -> anyhow::Result<Quote> {
-        Ok(self.prepare_with_fee(trade, None).await?.quote)
+        Ok(self.prepare_with_fee(trade, None, None).await?.quote)
     }
 
     async fn prepare_swap(&self, trade: &Trade) -> anyhow::Result<PreparedSwap> {
-        Ok(self.prepare_with_fee(trade, None).await?)
+        Ok(self.prepare_with_fee(trade, None, None).await?)
     }
 
     async fn prepare_sponsored_swap(
         &self,
-        _trade: &Trade,
-        _sponsor: &Pubkey,
+        trade: &Trade,
+        sponsor: &Pubkey,
     ) -> anyhow::Result<PreparedSwap> {
-        // The swap instruction creates missing token accounts itself, with the user as its only
-        // signer and rent payer, so a sponsor can't take over that rent from outside.
-        // The API's `payer` parameter is also the asset owner.
-        anyhow::bail!(
-            "bloXroute routes charge token-account rent to the user inside the swap; sponsored swaps are unsupported"
-        )
+        Ok(self.prepare_with_fee(trade, Some(sponsor), None).await?)
     }
 }
 
 impl InstructionsResponse {
-    fn prepare_with_fee(&self, trade: &Trade, fee: Option<ProviderFee>) -> Result<PreparedSwap> {
+    fn prepare_with_fee(
+        &self,
+        trade: &Trade,
+        payer: Option<&Pubkey>,
+        fee: Option<ProviderFee>,
+    ) -> Result<PreparedSwap> {
         let (input, output) = route_mints(trade);
         if self.input_mint != input.to_string() || self.output_mint != output.to_string() {
             return Err(decode_error(
@@ -135,20 +145,23 @@ impl InstructionsResponse {
         }
         let mut instructions = self.transaction_config.instructions()?;
         if let Some(fee) = fee {
-            instructions.push(fee.setup(&trade.wallet));
+            instructions.push(fee.setup(payer.unwrap_or(&trade.wallet)));
         }
         for instruction in &self.setup_instructions {
-            let instruction = instruction.decode_base64(VENUE, trade.wallet, None)?;
+            let mut instruction = instruction.decode_base64(VENUE, trade.wallet, payer)?;
             if instruction.program_id == COMPUTE_BUDGET_PROGRAM {
                 return Err(decode_error(
                     "unexpected compute budget in setup instructions",
                 ));
             }
+            if let Some(payer) = payer {
+                move_rent_to_sponsor(VENUE, &mut instruction, trade.wallet, *payer)?;
+            }
             instructions.push(instruction);
         }
         let swap = self
             .swap_instruction
-            .decode_base64(VENUE, trade.wallet, None)?;
+            .decode_base64(VENUE, trade.wallet, payer)?;
         if swap.program_id != PROGRAM
             || swap.data.is_empty()
             || !swap
@@ -195,6 +208,15 @@ impl TransactionConfig {
         }
         Ok(instructions)
     }
+}
+
+fn max_accounts(payer: Option<&Pubkey>) -> u8 {
+    let sponsor_extra = if payer.is_some() {
+        SPONSOR_EXTRA_ACCOUNTS
+    } else {
+        0
+    };
+    MAX_V1_ACCOUNTS - SDK_EXTRA_ACCOUNTS - sponsor_extra
 }
 
 fn budget(kind: u8, value: u32) -> Instruction {

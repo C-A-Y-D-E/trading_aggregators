@@ -145,12 +145,11 @@ impl TradingClient {
     ) -> Result<PreparedSwap> {
         let payer = self.sponsor_for(trade).map(GasSponsor::wallet);
         match source {
-            QuoteSource::Bloxroute if payer.is_none() => {
-                self.bloxroute.prepare_with_fee(trade, Some(fee)).await
+            QuoteSource::Bloxroute => {
+                self.bloxroute
+                    .prepare_with_fee(trade, payer.as_ref(), Some(fee))
+                    .await
             }
-            QuoteSource::Bloxroute => Err(TradeError::Build(
-                "bloXroute sponsored swaps are unsupported".into(),
-            )),
             QuoteSource::DFlow => {
                 self.dflow
                     .prepare_with_fee(trade, payer.as_ref(), Some(fee))

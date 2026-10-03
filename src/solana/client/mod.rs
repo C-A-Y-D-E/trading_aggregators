@@ -73,8 +73,7 @@ impl TradingClient {
     }
 
     /// Every USDC-settled trade on this client is sponsored, whatever the user's SOL balance;
-    /// sources that can't be sponsored (bloXroute, and Pump.fun/PumpSwap, which trade SOL only)
-    /// return an error. Use a separate client for unsponsored trades.
+    /// Pump.fun and PumpSwap trade SOL only, so they can't be sponsored and return an error. Use a separate client for unsponsored trades.
     pub fn with_gas_sponsor(mut self, sponsor: GasSponsor) -> Self {
         self.gas_sponsor = Some(sponsor);
         self

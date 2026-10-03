@@ -106,13 +106,7 @@ pub(crate) async fn submit_swap(
     supplemental_lookup_tables: &[AddressLookupTableAccount],
 ) -> Result<SwapResult> {
     let alts = merge_lookup_tables(&prepared.lookup_tables, supplemental_lookup_tables);
-    let reimbursement_index = prepared
-        .instructions
-        .iter()
-        .filter(|instruction| !is_compute_unit_limit(instruction))
-        .count()
-        .checked_sub(1)
-        .map(|index| index + PREPENDED_BUDGET_INSTRUCTIONS);
+    let reimbursement_index = last_compiled_index(&prepared.instructions, prepared.format);
     let mut sponsorship_fee = prepared.quote.sponsorship_fee;
     let route = Route {
         instructions: prepared.instructions,
@@ -323,6 +317,29 @@ fn check_size(tx: &VersionedTransaction, format: TransactionFormat) -> Result<()
         )));
     }
     Ok(())
+}
+
+/// Where the route's last instruction, the sponsor reimbursement, lands once compiled.
+/// V0 drops CU-limit requests and prepends two budget instructions; V1 moves every
+/// budget instruction into the message header.
+fn last_compiled_index(instructions: &[Instruction], format: TransactionFormat) -> Option<usize> {
+    let (kept, prepended) = match format {
+        TransactionFormat::V0 => (
+            instructions
+                .iter()
+                .filter(|instruction| !is_compute_unit_limit(instruction))
+                .count(),
+            PREPENDED_BUDGET_INSTRUCTIONS,
+        ),
+        TransactionFormat::V1 => (
+            instructions
+                .iter()
+                .filter(|instruction| instruction.program_id != COMPUTE_BUDGET_PROGRAM)
+                .count(),
+            0,
+        ),
+    };
+    kept.checked_sub(1).map(|index| index + prepended)
 }
 
 fn is_compute_unit_limit(instruction: &Instruction) -> bool {

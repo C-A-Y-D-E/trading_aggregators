@@ -450,7 +450,9 @@ bloXroute uses `/v1/swap-instructions` with the raw `Authorization` header. The
 public testing endpoint is `https://api-dev.blox.ag` (mainnet assets). Its routes
 use about 60 inline accounts and no lookup tables, so the SDK builds them as
 **V1 transactions** (`PreparedSwap.format == TransactionFormat::V1`, live on mainnet
-since 2026-09-15): up to 64 accounts and 4,096 bytes. bloXroute's budget
+since 2026-09-15): up to 64 accounts and 4,096 bytes. The SDK asks bloXroute for
+at most 61 accounts (`maxAccounts`), leaving room for a submitter tip and an SDK fee
+transfer added after the route. bloXroute's budget
 configuration (compute-unit floor, loaded-account limit, heap) goes into the V1
 message header instead of ComputeBudget instructions, and the caller's priority fee
 is written there as total lamports. The executor adds simulation headroom. Every
@@ -569,13 +571,13 @@ Keep the sponsor funded with SOL. No contract deployment or user SOL top-up is n
 This client requires sponsorship for **every USDC-settled buy/sell**, regardless
 of the user's SOL balance. Unsupported sources return an error. It is opt-in, not automatic balance detection. Use an unsponsored client
 for ordinary USDC trades. SOL-settled trades on either client remain unsponsored.
-Sponsored execution uses only the selected Jupiter, DFlow or Relay source;
+Sponsored execution uses only the selected Jupiter, DFlow, bloXroute or Relay source;
 Pump.fun and PumpSwap trade SOL only, so they are never sponsored. The user stays
 trader and token owner. Only the selected source is requested. A sponsored failure returns an error;
 there is no provider fallback or downgrade to unsponsored execution. bloXroute
-sponsorship is unsupported: its swap instruction creates missing token accounts
-itself, with the user as the only signer and rent payer, so a sponsor cannot take
-over that rent from outside the instruction. Relay uses `depositFeePayer` and verified sponsor-paid
+receives the sponsor as `feePayer`, so its swap instruction charges token-account
+rent to the sponsor; sponsored bloXroute routes are capped at 59 accounts to leave
+room for the reimbursement transfer. Relay uses `depositFeePayer` and verified sponsor-paid
 ATA setup; routes that still require a user SOL transfer are rejected. See the official
 [Jupiter payer](https://developers.jup.ag/docs/swap/advanced/gasless) and
 [DFlow sponsorship](https://pond.dflow.net/spot/trading/sponsored-swaps) contracts.

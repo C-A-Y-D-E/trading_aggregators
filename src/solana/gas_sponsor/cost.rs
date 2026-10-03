@@ -170,13 +170,16 @@ fn replace_reimbursement(
     reserved: u64,
     charge: u64,
 ) -> Result<()> {
-    let VersionedMessage::V0(message) = &mut transaction.message else {
-        return Err(build_error(
-            "sponsor cost recovery requires a v0 transaction",
-        ));
+    let instructions = match &mut transaction.message {
+        VersionedMessage::V0(message) => &mut message.instructions,
+        VersionedMessage::V1(message) => &mut message.instructions,
+        _ => {
+            return Err(build_error(
+                "sponsor cost recovery requires a v0 or v1 transaction",
+            ));
+        }
     };
-    let instruction = message
-        .instructions
+    let instruction = instructions
         .get_mut(index)
         .ok_or_else(|| build_error("missing sponsorship transfer"))?;
     let mut expected = vec![12];
